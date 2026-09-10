@@ -55,6 +55,13 @@ describe('exact byte offsets and padding', () => {
   //   expect(buf.readUInt32LE(8)).toBe(0xdeadbeef);
   // });
 
+  it('pads a byte then boolean to a 4-byte boundary, wire form is uint32 not a single byte', () => {
+    const buf = marshal('yb', [0x42, true]);
+    expect(buf.length).toBe(8); // 1 + 3 pad + 4, not 1 + 3 pad + 1
+    expect(buf.readUInt8(0)).toBe(0x42);
+    expect(buf.readUInt32LE(4)).toBe(1);
+  });
+
   it('excludes the length-to-first-element pad from the array length, but counts inter-element padding', () => {
     // Array of uint64 (8-byte aligned elements). After the 4-byte length field (offset 0-3), the
     // writer sits at absolute offset 4 and must pad 4 bytes to reach the element's 8-byte
@@ -178,6 +185,13 @@ describe('round-trip encoding through decoding', () => {
   it('round-trips an empty array without breaking element alignment', () => {
     const [decoded] = roundTrip('a{sv}', [[]]);
     expect(decoded).toEqual([]);
+  });
+
+  it('round-trips booleans, decoding any nonzero uint32 as true', () => {
+    expect(roundTrip('b', [true])).toEqual([true]);
+    expect(roundTrip('b', [false])).toEqual([false]);
+    const { values } = unmarshal('b', marshal('u', [42]));
+    expect(values).toEqual([true]);
   });
 });
 

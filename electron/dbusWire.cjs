@@ -14,20 +14,20 @@
 // (Hello, AddMatch, Properties.Get) and the GlobalShortcuts portal interface between them use y
 // (header field codes), u (serials, version, response codes), t (Activated/Deactivated
 // timestamps), s/o (strings and object paths -- same wire form, see landmine #5), g (signatures),
-// plus the containers a/(/v/{. 
-// 
-// D-Bus also defines, and we implement, b, n, q, i, x and d (boolean, int16, uint16, int32, 
-// int64, double) below, but since nothing here ever uses them, they're commented out. Restoring one 
-// means uncommenting it everywhere it appears in this file (ALIGN, BASIC_TYPE_CODES, the 
-// relevant Writer/Reader method, and its case in encodeValue/decodeValue) plus 
-// its test in portalShortcuts.test.ts. If you do, be sure to test.
+// b (booleans -- e.g. Request::Response result values), plus the containers a/(/v/{.
+//
+// D-Bus also defines, and we implement, n, q, i, x and d (int16, uint16, int32, int64, double)
+// below, but since nothing here ever uses them, they're commented out. Restoring one means
+// uncommenting it everywhere it appears in this file (ALIGN, BASIC_TYPE_CODES, the relevant
+// Writer/Reader method, and its case in encodeValue/decodeValue) plus its test in
+// portalShortcuts.test.ts. If you do, be sure to test.
 const ALIGN = {
-  y: 1, u: 4, t: 8,
-  // b: 4, n: 2, q: 2, i: 4, x: 8, d: 8,
+  y: 1, u: 4, t: 8, b: 4,
+  // n: 2, q: 2, i: 4, x: 8, d: 8,
   s: 4, o: 4, g: 1, a: 4, '(': 8, v: 1, '{': 8,
 };
 
-const BASIC_TYPE_CODES = 'yutsog'; // + unused 'bnqixd', see the note above
+const BASIC_TYPE_CODES = 'yutsogb'; // + unused 'nqixd', see the note above
 
 function align(n, boundary) {
   const rem = n % boundary;
@@ -196,7 +196,7 @@ function variant(sig, value) {
 function encodeValue(writer, type, value) {
   switch (type.code) {
     case 'y': writer.writeU8(value); return;
-    // case 'b': writer.writeU32LE(value ? 1 : 0); return;
+    case 'b': writer.writeU32LE(value ? 1 : 0); return; // wire form is uint32, not a single byte
     // case 'n': writer.writeI16LE(value); return;
     // case 'q': writer.writeU16LE(value); return;
     // case 'i': writer.writeI32LE(value); return;
@@ -337,7 +337,7 @@ class Reader {
 function decodeValue(reader, type) {
   switch (type.code) {
     case 'y': return reader.readU8();
-    // case 'b': return reader.readU32LE() !== 0;
+    case 'b': return reader.readU32LE() !== 0;
     // case 'n': return reader.readI16LE();
     // case 'q': return reader.readU16LE();
     // case 'i': return reader.readI32LE();

@@ -44,6 +44,7 @@ class DBusConnection {
     this.serial = 1;
     this.pending = new Map();
     this.signalHandlers = [];
+    this.closeHandlers = [];
     this.recvBuf = Buffer.alloc(0);
     this.uniqueName = null;
   }
@@ -145,18 +146,29 @@ class DBusConnection {
   }
 
   _onSocketError(err) {
+    // 'close' always follows 'error' on a net.Socket -- _onSocketClose does the actual teardown
+    // and notification, so this is just for the log.
     this.log('error', `dbus: socket error: ${err.message}`);
-    for (const p of this.pending.values()) p.reject(err);
-    this.pending.clear();
   }
 
+  // Unexpected disconnect (bus crash, compositor/session restart, etc). Does NOT fire for an
+  // intentional close() -- that already tears down state and the caller knows it initiated it.
   _onSocketClose() {
+    this.socket = null;
     const err = new Error('D-Bus connection closed');
     for (const p of this.pending.values()) p.reject(err);
     this.pending.clear();
+    for (const fn of this.closeHandlers.slice()) {
+      try {
+        fn();
+      } catch (e) {
+        this.log('error', `dbus: close handler threw: ${e.message}`);
+      }
+    }
   }
 
   call({ destination, path, iface, member, bodySig = '', bodyValues = [] }) {
+    if (!this.socket) return Promise.reject(new Error('D-Bus connection is closed'));
     const serial = this.serial++;
     const msg = buildMessage({
       type: MESSAGE_TYPE.METHOD_CALL, flags: 0, serial, path, iface, member, destination, bodySig, bodyValues,
@@ -177,6 +189,19 @@ class DBusConnection {
     };
   }
 
+  // Fires once on an unexpected disconnect (not on a caller-initiated close()). The bus itself
+  // rarely dies, but the portal backend restarting, a compositor restart, or suspend/resume can
+  // still take the socket down -- there is no transparent reconnect here since a fresh Session
+  // has to be created and shortcuts rebound anyway (GlobalShortcuts has no restore token), so
+  // recovery is really "call start() again", which belongs to the caller.
+  onClose(fn) {
+    this.closeHandlers.push(fn);
+    return () => {
+      const i = this.closeHandlers.indexOf(fn);
+      if (i !== -1) this.closeHandlers.splice(i, 1);
+    };
+  }
+
   async hello() {
     const [name] = await this.call({ destination: BUS_NAME, path: BUS_PATH, iface: BUS_IFACE, member: 'Hello' });
     this.uniqueName = name;
@@ -190,10 +215,16 @@ class DBusConnection {
   }
 
   close() {
-    if (this.socket) {
-      this.socket.destroy();
-      this.socket = null;
-    }
+    if (!this.socket) return;
+    // Remove our own listeners first so an intentional close doesn't also run _onSocketClose's
+    // unexpected-disconnect teardown (which would fire the close handlers registered via onClose).
+    this.socket.removeAllListeners('close');
+    this.socket.removeAllListeners('error');
+    this.socket.destroy();
+    this.socket = null;
+    const err = new Error('D-Bus connection closed');
+    for (const p of this.pending.values()) p.reject(err);
+    this.pending.clear();
   }
 }
 

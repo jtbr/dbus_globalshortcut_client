@@ -8,7 +8,7 @@
 // Module API:
 //   const portal = require("./portalShortcuts.cjs");
 //   portal.init(log);
-//   const result = await portal.start({ id, description, preferredTrigger, onActivated });
+//   const result = await portal.start({ id, description, preferredTrigger, onActivated, onDisconnected });
 //   portal.isAvailable();
 //   await portal.configure();
 //   portal.stop();
@@ -148,7 +148,9 @@ function init(logger) {
   log = logger || (() => {});
 }
 
-async function start({ id, description, preferredTrigger, onActivated, parentWindow = '' }) {
+async function start({
+  id, description, preferredTrigger, onActivated, onDisconnected, parentWindow = '',
+}) {
   if (conn) {
     log('warn', 'portal: start() called while already started; call stop() first');
     return { ok: false, reason: 'error', error: 'already started' };
@@ -162,6 +164,23 @@ async function start({ id, description, preferredTrigger, onActivated, parentWin
     log('info', `portal: unavailable (no D-Bus session bus): ${err.message}`);
     return { ok: false, reason: 'unavailable', error: err.message };
   }
+
+  // Fires only on an unexpected drop (bus crash, compositor restart, portal backend going away
+  // taking the socket with it, ...) -- stop() closes intentionally and this never sees it. There's
+  // no reconnect here: a new Session has to be created and shortcuts rebound regardless, so
+  // recovery is just calling start() again, which we leave to the caller via onDisconnected.
+  c.onClose(() => {
+    log('warn', 'portal: D-Bus connection closed unexpectedly');
+    conn = null;
+    session = null;
+    boundId = null;
+    available = false;
+    try {
+      if (onDisconnected) onDisconnected();
+    } catch (err) {
+      log('error', `portal: onDisconnected handler threw: ${err.message}`);
+    }
+  });
 
   try {
     await c.hello();
