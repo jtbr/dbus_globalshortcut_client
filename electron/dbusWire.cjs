@@ -10,10 +10,22 @@
 
 'use strict';
 
+// Only the type codes this client actually needs: the four D-Bus core bootstrapping calls
+// (Hello, AddMatch, Properties.Get) and the GlobalShortcuts portal interface between them use y
+// (header field codes), u (serials, version, response codes), t (Activated/Deactivated
+// timestamps), s/o (strings and object paths -- same wire form, see landmine #5), g (signatures),
+// plus the containers a/(/v/{. D-Bus also defines b, n, q, i, x and d (boolean, int16, uint16,
+// int32, int64, double); nothing here ever uses them, so they're commented out below rather than
+// carried as untested, unreachable code -- restoring one means uncommenting it everywhere it
+// appears in this file (ALIGN, BASIC_TYPE_CODES, the relevant Writer/Reader method, and its case
+// in encodeValue/decodeValue) plus its test in portalShortcuts.test.ts.
 const ALIGN = {
-  y: 1, b: 4, n: 2, q: 2, i: 4, u: 4, x: 8, t: 8, d: 8,
+  y: 1, u: 4, t: 8,
+  // b: 4, n: 2, q: 2, i: 4, x: 8, d: 8,
   s: 4, o: 4, g: 1, a: 4, '(': 8, v: 1, '{': 8,
 };
+
+const BASIC_TYPE_CODES = 'yutsog'; // + unused 'bnqixd', see the note above
 
 function align(n, boundary) {
   const rem = n % boundary;
@@ -25,7 +37,7 @@ function align(n, boundary) {
 function parseOne(sig, i) {
   const c = sig[i];
   if (c === undefined) throw new Error('unexpected end of signature');
-  if ('ybnqiuxtdsog'.includes(c)) return [{ code: c }, i + 1];
+  if (BASIC_TYPE_CODES.includes(c)) return [{ code: c }, i + 1];
   if (c === 'v') return [{ code: 'v' }, i + 1];
   if (c === 'a') {
     const [elem, ni] = parseOne(sig, i + 1);
@@ -90,19 +102,19 @@ class Writer {
     this._push(Buffer.from([v & 0xff]));
   }
 
-  writeU16LE(v) {
-    this.align(2);
-    const b = Buffer.alloc(2);
-    b.writeUInt16LE(v >>> 0, 0);
-    this._push(b);
-  }
+  // writeU16LE(v) {
+  //   this.align(2);
+  //   const b = Buffer.alloc(2);
+  //   b.writeUInt16LE(v >>> 0, 0);
+  //   this._push(b);
+  // }
 
-  writeI16LE(v) {
-    this.align(2);
-    const b = Buffer.alloc(2);
-    b.writeInt16LE(v, 0);
-    this._push(b);
-  }
+  // writeI16LE(v) {
+  //   this.align(2);
+  //   const b = Buffer.alloc(2);
+  //   b.writeInt16LE(v, 0);
+  //   this._push(b);
+  // }
 
   writeU32LE(v) {
     this.align(4);
@@ -111,12 +123,12 @@ class Writer {
     this._push(b);
   }
 
-  writeI32LE(v) {
-    this.align(4);
-    const b = Buffer.alloc(4);
-    b.writeInt32LE(v, 0);
-    this._push(b);
-  }
+  // writeI32LE(v) {
+  //   this.align(4);
+  //   const b = Buffer.alloc(4);
+  //   b.writeInt32LE(v, 0);
+  //   this._push(b);
+  // }
 
   writeU64LE(v) {
     this.align(8);
@@ -125,19 +137,19 @@ class Writer {
     this._push(b);
   }
 
-  writeI64LE(v) {
-    this.align(8);
-    const b = Buffer.alloc(8);
-    b.writeBigInt64LE(BigInt(v), 0);
-    this._push(b);
-  }
+  // writeI64LE(v) {
+  //   this.align(8);
+  //   const b = Buffer.alloc(8);
+  //   b.writeBigInt64LE(BigInt(v), 0);
+  //   this._push(b);
+  // }
 
-  writeDouble(v) {
-    this.align(8);
-    const b = Buffer.alloc(8);
-    b.writeDoubleLE(v, 0);
-    this._push(b);
-  }
+  // writeDouble(v) {
+  //   this.align(8);
+  //   const b = Buffer.alloc(8);
+  //   b.writeDoubleLE(v, 0);
+  //   this._push(b);
+  // }
 
   writeString(str) {
     this.align(4);
@@ -182,14 +194,14 @@ function variant(sig, value) {
 function encodeValue(writer, type, value) {
   switch (type.code) {
     case 'y': writer.writeU8(value); return;
-    case 'b': writer.writeU32LE(value ? 1 : 0); return;
-    case 'n': writer.writeI16LE(value); return;
-    case 'q': writer.writeU16LE(value); return;
-    case 'i': writer.writeI32LE(value); return;
+    // case 'b': writer.writeU32LE(value ? 1 : 0); return;
+    // case 'n': writer.writeI16LE(value); return;
+    // case 'q': writer.writeU16LE(value); return;
+    // case 'i': writer.writeI32LE(value); return;
     case 'u': writer.writeU32LE(value); return;
-    case 'x': writer.writeI64LE(value); return;
+    // case 'x': writer.writeI64LE(value); return;
     case 't': writer.writeU64LE(value); return;
-    case 'd': writer.writeDouble(value); return;
+    // case 'd': writer.writeDouble(value); return;
     case 's': writer.writeString(value); return;
     case 'o': writer.writeString(value); return; // same wire form as `s`; see landmine #5
     case 'g': writer.writeSignature(value); return;
@@ -253,19 +265,19 @@ class Reader {
     return v;
   }
 
-  readU16LE() {
-    this.align(2);
-    const v = this.buf.readUInt16LE(this.pos);
-    this.pos += 2;
-    return v;
-  }
+  // readU16LE() {
+  //   this.align(2);
+  //   const v = this.buf.readUInt16LE(this.pos);
+  //   this.pos += 2;
+  //   return v;
+  // }
 
-  readI16LE() {
-    this.align(2);
-    const v = this.buf.readInt16LE(this.pos);
-    this.pos += 2;
-    return v;
-  }
+  // readI16LE() {
+  //   this.align(2);
+  //   const v = this.buf.readInt16LE(this.pos);
+  //   this.pos += 2;
+  //   return v;
+  // }
 
   readU32LE() {
     this.align(4);
@@ -274,12 +286,12 @@ class Reader {
     return v;
   }
 
-  readI32LE() {
-    this.align(4);
-    const v = this.buf.readInt32LE(this.pos);
-    this.pos += 4;
-    return v;
-  }
+  // readI32LE() {
+  //   this.align(4);
+  //   const v = this.buf.readInt32LE(this.pos);
+  //   this.pos += 4;
+  //   return v;
+  // }
 
   readU64LE() {
     this.align(8);
@@ -288,19 +300,19 @@ class Reader {
     return v;
   }
 
-  readI64LE() {
-    this.align(8);
-    const v = this.buf.readBigInt64LE(this.pos);
-    this.pos += 8;
-    return v;
-  }
+  // readI64LE() {
+  //   this.align(8);
+  //   const v = this.buf.readBigInt64LE(this.pos);
+  //   this.pos += 8;
+  //   return v;
+  // }
 
-  readDouble() {
-    this.align(8);
-    const v = this.buf.readDoubleLE(this.pos);
-    this.pos += 8;
-    return v;
-  }
+  // readDouble() {
+  //   this.align(8);
+  //   const v = this.buf.readDoubleLE(this.pos);
+  //   this.pos += 8;
+  //   return v;
+  // }
 
   readString() {
     this.align(4);
@@ -323,14 +335,14 @@ class Reader {
 function decodeValue(reader, type) {
   switch (type.code) {
     case 'y': return reader.readU8();
-    case 'b': return reader.readU32LE() !== 0;
-    case 'n': return reader.readI16LE();
-    case 'q': return reader.readU16LE();
-    case 'i': return reader.readI32LE();
+    // case 'b': return reader.readU32LE() !== 0;
+    // case 'n': return reader.readI16LE();
+    // case 'q': return reader.readU16LE();
+    // case 'i': return reader.readI32LE();
     case 'u': return reader.readU32LE();
-    case 'x': return reader.readI64LE();
+    // case 'x': return reader.readI64LE();
     case 't': return reader.readU64LE();
-    case 'd': return reader.readDouble();
+    // case 'd': return reader.readDouble();
     case 's': return reader.readString();
     case 'o': return reader.readString();
     case 'g': return reader.readSignature();
