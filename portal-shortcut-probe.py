@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
-"""Probe the XDG GlobalShortcuts portal, independently of Electron.
+"""Probe the XDG GlobalShortcuts portal directly, independently of any app or toolkit.
 
-One question: does a shortcut bound in an earlier run still DELIVER in a later run?
-
-Unhush saw a portal binding survive a restart, remain listed in System Settings, and then deliver
-nothing when pressed -- and crash Electron (SIGTRAP, a Chromium CHECK) when a stale one fired. That
-could be the portal/desktop failing to restore, or it could be Electron's bookkeeping: Chromium
-derives shortcut ids locally from a stored UUID plus the accelerator string, so a mismatch after
-restoration would produce exactly those symptoms. This script settles which, by driving the portal
-directly with a single fixed shortcut id and taking ids from whatever ListShortcuts returns.
-
-Nothing here touches Unhush. It binds its own shortcut under its own id.
+Drives CreateSession / BindShortcuts / ListShortcuts / ConfigureShortcuts over one D-Bus
+connection, using a single fixed shortcut id and taking ids only from what the portal returns.
 
 Why Python/Gio rather than a shell script: a portal session lives and dies with the D-Bus
 CONNECTION, so `gdbus call` cannot be used -- each invocation is its own short-lived connection and
@@ -20,37 +12,19 @@ across create -> bind -> wait.
 Requires python3-gobject  (Fedora: sudo dnf install python3-gobject)
 
 Usage:
-    ./portal-shortcut-probe.py bind     # run 1: create a session, bind, wait for presses
-    ./portal-shortcut-probe.py listen   # run 2: create a session, list only, wait for presses
-    ./portal-shortcut-probe.py rebind   # run 3: create a session, bind the SAME id again, wait
+    ./portal-shortcut-probe.py bind     # create a session, bind, wait for presses
+    ./portal-shortcut-probe.py listen   # create a session, list only, wait for presses
+    ./portal-shortcut-probe.py rebind   # create a session, bind the SAME id again, wait
 
-    ./portal-shortcut-probe.py rebind CTRL+ALT+k    # run 4: same id, DIFFERENT key
-    ./portal-shortcut-probe.py configure            # run 5: bind, then open the desktop's editor
-
-Run 4 is the one that decides whether an app can change its own shortcut. Watch three things:
-whether the trigger reported back is the new key or the old one; whether the old key still fires;
-and whether System Settings now lists one binding or two.
-
-The modes exist because "the binding persisted" and "the binding is armed" turned out to be
-different things. `listen` establishes whether merely restoring a session re-arms the shortcut --
-measured on Plasma 6, it does not: ListShortcuts reports the shortcut, but the key still reaches
-the focused window, so the compositor never grabbed it. `rebind` tests the flow an app actually
-uses on restart, and which the portal documentation says "re-binds silently".
-
-Interpretation of `rebind`:
-    binds without a prompt AND presses arrive  -> the restart flow works; Electron's own id
-                                                  bookkeeping is the bug, and driving the portal
-                                                  directly would fix it
-    binds (prompt or not) but presses do NOT   -> the desktop re-binds without arming; unusable
-                                                  however we drive it
-    prompts on every run                       -> workable but a consent dialog every launch
+    ./portal-shortcut-probe.py rebind CTRL+ALT+k    # same id, DIFFERENT key
+    ./portal-shortcut-probe.py configure            # bind, then open the desktop's editor
 
 MEASURED, Fedora KDE Plasma 6 / Wayland, 2026-09:
 
     bind                    armed, delivers
     listen                  shortcut LISTED but NOT armed -- the key still reaches the focused
                             window, so restoring a session does not re-arm anything
-    rebind (same key)       armed, delivers
+    rebind (same key)       armed, delivers, no prompt
     rebind (different key)  the OLD trigger wins: the new key is never captured, the old one still
                             fires, and NO second binding is created
     configure               opens System Settings on our app. "Add+" captures ADDITIONAL keys for
@@ -58,21 +32,13 @@ MEASURED, Fedora KDE Plasma 6 / Wayland, 2026-09:
                             app-supplied default leaves user-added keys active and firing. Triggers
                             can be disabled but not deleted (only the whole app entry can be
                             removed). Since Activated carries the shortcut id, every trigger reaches
-                            the same handler -- so the app suggests a key, and the user can replace
-                            it entirely without the app being involved
+                            the same handler.
 
-So: the portal itself works across restarts, and Electron's globalShortcut does not -- Chromium
-builds shortcut ids locally as prefix + "-" + accelerator (the prefix embedding a UUID from its own
-prefs) rather than using the ids the portal returns, so a restored binding resolves to nothing. That
-also accounts for the SIGTRAP: an activation whose id is absent from bound_commands_ trips a CHECK.
-
-And the accumulation Unhush suffered -- a stale binding per key ever tried -- is a consequence of
-that same accelerator-as-id scheme, not of the portal. One stable id yields exactly one binding.
-
-The hard limit is that preferred_trigger is honoured only on the FIRST bind. An application cannot
-change its own shortcut afterwards; only the user can, in their desktop's settings or via
-GlobalShortcuts.ConfigureShortcuts(session_handle, ...), which shows a configuration UI for the
-shortcuts of a live session.
+Consequences for any app using this portal: call BindShortcuts on every launch (ListShortcuts alone
+does not re-arm); use one stable shortcut id for the app's lifetime (one id yields exactly one
+binding, ever); preferred_trigger is honoured on the FIRST bind only -- an app cannot change its own
+shortcut afterward, only the user can, via ConfigureShortcuts or their desktop's settings; there is
+no unbind, only removing the whole app entry.
 """
 
 import sys
@@ -86,11 +52,10 @@ PORTAL_PATH = "/org/freedesktop/portal/desktop"
 SHORTCUTS_IFACE = "org.freedesktop.portal.GlobalShortcuts"
 REQUEST_IFACE = "org.freedesktop.portal.Request"
 
-# A single stable id, deliberately unlike Chromium's scheme of using the accelerator string as the
-# id -- that is what makes every key you try leave another permanent binding behind.
+# A single stable id: one id yields exactly one binding, ever (see MEASURED above).
 SHORTCUT_ID = "probe-toggle"
-# Portal syntax, not Electron's; see the shortcuts XDG spec. Overridable on the command line so the
-# same id can be re-bound with a DIFFERENT key -- the case that broke Unhush.
+# Portal syntax, not a UI toolkit's; see the XDG shortcuts spec. Overridable on the command line so
+# the same id can be re-bound with a DIFFERENT key -- see `rebind` above.
 DEFAULT_TRIGGER = "CTRL+ALT+j"
 trigger = DEFAULT_TRIGGER
 
@@ -100,7 +65,7 @@ _token_counter = 0
 def next_token(prefix):
     global _token_counter
     _token_counter += 1
-    return f"unhushprobe{prefix}{_token_counter}"
+    return f"probe{prefix}{_token_counter}"
 
 
 def sender_token(conn):
@@ -183,7 +148,7 @@ def create_session(conn, loop):
 def bind(conn, loop, session):
     def build(token):
         shortcuts = [(SHORTCUT_ID, {
-            "description": GLib.Variant("s", "Unhush probe: toggle recording"),
+            "description": GLib.Variant("s", "Python shortcut probe: toggle recording"),
             "preferred_trigger": GLib.Variant("s", trigger),
         })]
         return GLib.Variant("(oa(sa{sv})sa{sv})", (

@@ -100,9 +100,12 @@ async function runCli(argv) {
   console.log(`session: ${sess}`);
 
   if (mode === 'configure' || mode === 'bind' || mode === 'rebind') {
+    // NOTE: rebind is NOT expected to allow re-assigning the shortcut: the user is responsible for doing that himself.
+    // The id can only be set once (with a single, default, unchanging shortcut); only the user can remove this default.
+    // A "change" means the user disabling the default shortcut key and adding an enabled alternative.
     if (mode === 'rebind') console.log('(re-binding the same id on a new session -- note whether a prompt appears)');
     console.log(`requesting preferred_trigger=${JSON.stringify(trigger)} for id=${JSON.stringify(SHORTCUT_ID)}`);
-    const bindResult = await bindShortcuts(c, sess, [{ id: SHORTCUT_ID, description: 'JS probe: toggle recording', preferredTrigger: trigger }]);
+    const bindResult = await bindShortcuts(c, sess, [{ id: SHORTCUT_ID, description: 'JS shortcut probe: toggle recording', preferredTrigger: trigger }]);
     if (bindResult.code !== 0) {
       console.error(`FAIL: BindShortcuts returned response code ${bindResult.code} (1 = cancelled by user)`);
       process.exitCode = 1;

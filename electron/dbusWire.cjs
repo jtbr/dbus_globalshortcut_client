@@ -10,15 +10,17 @@
 
 'use strict';
 
-// Only the type codes this client actually needs: the four D-Bus core bootstrapping calls
+// Only include type codes this client actually needs: the four D-Bus core bootstrapping calls
 // (Hello, AddMatch, Properties.Get) and the GlobalShortcuts portal interface between them use y
 // (header field codes), u (serials, version, response codes), t (Activated/Deactivated
 // timestamps), s/o (strings and object paths -- same wire form, see landmine #5), g (signatures),
-// plus the containers a/(/v/{. D-Bus also defines b, n, q, i, x and d (boolean, int16, uint16,
-// int32, int64, double); nothing here ever uses them, so they're commented out below rather than
-// carried as untested, unreachable code -- restoring one means uncommenting it everywhere it
-// appears in this file (ALIGN, BASIC_TYPE_CODES, the relevant Writer/Reader method, and its case
-// in encodeValue/decodeValue) plus its test in portalShortcuts.test.ts.
+// plus the containers a/(/v/{. 
+// 
+// D-Bus also defines, and we implement, b, n, q, i, x and d (boolean, int16, uint16, int32, 
+// int64, double) below, but since nothing here ever uses them, they're commented out. Restoring one 
+// means uncommenting it everywhere it appears in this file (ALIGN, BASIC_TYPE_CODES, the 
+// relevant Writer/Reader method, and its case in encodeValue/decodeValue) plus 
+// its test in portalShortcuts.test.ts. If you do, be sure to test.
 const ALIGN = {
   y: 1, u: 4, t: 8,
   // b: 4, n: 2, q: 2, i: 4, x: 8, d: 8,
