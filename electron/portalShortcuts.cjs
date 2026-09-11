@@ -1,14 +1,20 @@
 // D-Bus client for the XDG GlobalShortcuts portal, built on the generic bus client in
 // electron/dbusConnection.cjs.
 //
-// Reimplements scripts/portal-shortcut-probe.py in JavaScript so an app can bind its own global
-// hotkey on KDE, GNOME and Hyprland Wayland sessions without Electron's broken portal path (see
-// portal-client-spec.md for the full background). No npm dependencies -- Node built-ins only.
+// Implements and extends scripts/portal-shortcut-probe.py in JavaScript so an app can 
+// bind its own global hotkey. This is mainly needed on Wayland, since X11 allows direct
+// control. This is the best method when using XWayland, and is also needed under pure
+// Wayland KDE, GNOME and Hyprland Wayland sessions since Electron's portal path is broken
+// (user reassignment can cause the app to crash as the ID changes).
+//
+// No npm dependencies -- Node built-ins only.
 //
 // Module API:
 //   const portal = require("./portalShortcuts.cjs");
 //   portal.init(log);
-//   const result = await portal.start({ id, description, preferredTrigger, onActivated, onDisconnected });
+//   const result = await portal.start({ id, description, preferredTrigger, onActivated,
+//                                        onDisconnected, onShortcutsChanged });
+//   const { shortcuts } = await portal.list();
 //   portal.isAvailable();
 //   await portal.configure();
 //   portal.stop();
@@ -24,6 +30,28 @@ const PORTAL_NAME = 'org.freedesktop.portal.Desktop';
 const PORTAL_PATH = '/org/freedesktop/portal/desktop';
 const SHORTCUTS_IFACE = 'org.freedesktop.portal.GlobalShortcuts';
 const REQUEST_IFACE = 'org.freedesktop.portal.Request';
+
+const BUS_NAME = 'org.freedesktop.DBus';
+
+// The portal is two processes, not one. `org.freedesktop.portal.Desktop` is the frontend, which
+// routes each interface to a backend that claims `org.freedesktop.impl.portal.desktop.<desktop>`
+// (`.kde`, `.gnome`, `.hyprland`, ...). GlobalShortcuts is managed entirely by the backend, so
+// restarting *it* kills our session even while the frontend keeps its name and its owner -- so
+// watching the frontend alone is insufficient. Matched as a namespace because we cannot know
+// which backend is in play; the bus treats this as a dotted-prefix match, so a
+// merely string-prefixed name like `...desktopSomethingElse` does not match (verified on the
+// session bus).
+const BACKEND_NAMESPACE = 'org.freedesktop.impl.portal.desktop';
+const BUS_PATH = '/org/freedesktop/DBus';
+
+// Whether a NameOwnerChanged for `name` means the GlobalShortcuts session we hold is gone. The
+// match rules already narrow the traffic, but the bus is free to send more than was asked for and
+// acting on an unrelated name change would be a bad bug. A backend we don't use may restart too;
+// rebinding then is wasted work rather than incorrect -- the frontend never says which backend
+// serves GlobalShortcuts, so there is nothing more precise to test.
+function ownerChangeAffectsSession(name) {
+  return name === PORTAL_NAME || name.startsWith(`${BACKEND_NAMESPACE}.`);
+}
 
 const REQUEST_TIMEOUT_MS = 120000; // the consent dialog is a human in the loop; bound every wait
 
@@ -149,7 +177,7 @@ function init(logger) {
 }
 
 async function start({
-  id, description, preferredTrigger, onActivated, onDisconnected, parentWindow = '',
+  id, description, preferredTrigger, onActivated, onDisconnected, onShortcutsChanged, parentWindow = '',
 }) {
   if (conn) {
     log('warn', 'portal: start() called while already started; call stop() first');
@@ -169,8 +197,17 @@ async function start({
   // taking the socket with it, ...) -- stop() closes intentionally and this never sees it. There's
   // no reconnect here: a new Session has to be created and shortcuts rebound regardless, so
   // recovery is just calling start() again, which we leave to the caller via onDisconnected.
-  c.onClose(() => {
-    log('warn', 'portal: D-Bus connection closed unexpectedly');
+  // Both routes to "the binding is gone, start() again to get it back" end here. The caller sees
+  // one callback because there is one remedy; the log line says which happened.
+  let lostFired = false;
+  const lost = (why) => {
+    // A portal restart emits NameOwnerChanged twice (owner lost, then owner acquired), and a
+    // socket close can follow either. One remedy, announced once.
+    if (lostFired) return;
+    lostFired = true;
+    log('warn', `portal: ${why}`);
+    if (conn === c) c.close();               // no-op for a socket that closed on its own
+
     conn = null;
     session = null;
     boundId = null;
@@ -180,11 +217,27 @@ async function start({
     } catch (err) {
       log('error', `portal: onDisconnected handler threw: ${err.message}`);
     }
-  });
+  };
+
+  c.onClose(() => lost('D-Bus connection closed unexpectedly'));
 
   try {
     await c.hello();
     await c.addMatch(`type='signal',sender='${PORTAL_NAME}'`);
+    // A session belongs to the portal process that created it, so when that process is replaced --
+    // a restart, an update, a crash -- every handle we hold is dead: the shortcut stops firing and
+    // ConfigureShortcuts answers "AccessDenied: Invalid session". Our own socket is untouched by
+    // any of that (we are connected to the bus, not to the portal), so the socket-level disconnect
+    // below never sees it. NameOwnerChanged is what does: the bus tells us the well-known name has
+    // a new owner. Both names have to be watched -- see BACKEND_NAMESPACE. Tested on KDE Plasma 6:
+    // restarting xdg-desktop-portal.service is caught by the first rule, and
+    // plasma-xdg-desktop-portal-kde.service only by the second.
+    await c.addMatch(
+      `type='signal',sender='${BUS_NAME}',interface='${BUS_NAME}',member='NameOwnerChanged',arg0='${PORTAL_NAME}'`,
+    );
+    await c.addMatch(
+      `type='signal',sender='${BUS_NAME}',interface='${BUS_NAME}',member='NameOwnerChanged',arg0namespace='${BACKEND_NAMESPACE}'`,
+    );
 
     const avail = await checkAvailable(c);
     if (!avail.available) {
@@ -206,6 +259,29 @@ async function start({
           log('error', `portal: onActivated handler threw: ${err.message}`);
         }
       }
+    });
+
+    // The desktop tells us when the user edits our shortcut in its own editor (ConfigureShortcuts),
+    // which is the only way it can change after the first bind. Without this the trigger we show
+    // in the UI is whatever BindShortcuts said at startup, and stays wrong until the next launch.
+    c.onSignal({ path: PORTAL_PATH, iface: SHORTCUTS_IFACE, member: 'ShortcutsChanged' }, (msg) => {
+      const changed = unwrapShortcuts(msg.body[1]).find(([sid]) => sid === id);
+      if (!changed) return;
+      // An empty trigger_description is not "unknown" -- it means every trigger for this shortcut
+      // has been switched off, and the shortcut can no longer fire. Pass it through as-is.
+      const triggerDescription = changed[1].trigger_description || '';
+      log('info', `portal: ShortcutsChanged ${id} -> ${triggerDescription || '(no trigger)'}`);
+      try {
+        if (onShortcutsChanged) onShortcutsChanged(triggerDescription);
+      } catch (err) {
+        log('error', `portal: onShortcutsChanged handler threw: ${err.message}`);
+      }
+    });
+
+    c.onSignal({ path: BUS_PATH, iface: BUS_NAME, member: 'NameOwnerChanged' }, (msg) => {
+      const [name, oldOwner, newOwner] = msg.body;
+      if (!ownerChangeAffectsSession(name)) return;
+      lost(`${name} changed owner (${oldOwner || 'none'} -> ${newOwner || 'none'}); the session it held is gone`);
     });
 
     const sessionResult = await createSession(c);
@@ -242,6 +318,22 @@ async function start({
   }
 }
 
+// The live shortcuts, straight from the portal. ShortcutsChanged should alert us to edits made
+// while we are running; and this covers everything else by performing a direct query
+async function list() {
+  if (!conn || !session) return { ok: false, reason: 'error', error: 'not started' };
+  try {
+    const result = await listShortcuts(conn, session);
+    if (result.code !== 0) {
+      return { ok: false, reason: 'error', error: `ListShortcuts response code ${result.code}` };
+    }
+    return { ok: true, shortcuts: result.shortcuts };
+  } catch (err) {
+    log('warn', `portal: list() failed: ${err.message}`);
+    return { ok: false, reason: 'error', error: err.message };
+  }
+}
+
 function isAvailable() {
   return available;
 }
@@ -269,12 +361,13 @@ function stop() {
 }
 
 module.exports = {
-  init, start, isAvailable, configure, stop,
+  init, start, isAvailable, configure, list, stop,
   // Exposed for scripts/portal-client-probe.cjs and for tests; not part of the documented module
   // API. DBusConnection itself lives in dbusConnection.cjs -- callers needing the generic client
   // should require that directly rather than reaching through here.
   _internal: {
     createSession, bindShortcuts, listShortcuts, configureShortcuts, checkAvailable,
-    PORTAL_NAME, PORTAL_PATH, SHORTCUTS_IFACE,
+    ownerChangeAffectsSession,
+    PORTAL_NAME, PORTAL_PATH, SHORTCUTS_IFACE, BACKEND_NAMESPACE,
   },
 };

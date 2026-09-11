@@ -264,3 +264,35 @@ describe('message framing over a byte stream', () => {
     expect(message.body).toEqual(['no GlobalShortcuts backend']);
   });
 });
+
+// The portal is two processes, and watching only the frontend let a backend
+// restart kill the binding silently -- this predicate exists to prevent regressing
+const {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  _internal: { ownerChangeAffectsSession },
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+} = require('./portalShortcuts.cjs');
+
+describe('ownerChangeAffectsSession', () => {
+  it('matches the portal frontend', () => {
+    expect(ownerChangeAffectsSession('org.freedesktop.portal.Desktop')).toBe(true);
+  });
+
+  it('matches any desktop backend, whichever implements GlobalShortcuts', () => {
+    for (const backend of ['kde', 'gnome', 'hyprland', 'wlr', 'cosmic']) {
+      expect(ownerChangeAffectsSession(`org.freedesktop.impl.portal.desktop.${backend}`)).toBe(true);
+    }
+  });
+
+  it('ignores unrelated names, including a merely string-prefixed one', () => {
+    for (const name of [
+      'org.freedesktop.impl.portal.PermissionStore',
+      'org.freedesktop.impl.portal.desktopOther',
+      'org.freedesktop.portal.Documents',
+      'org.kde.KWin',
+      ':1.42',
+    ]) {
+      expect(ownerChangeAffectsSession(name)).toBe(false);
+    }
+  });
+});
