@@ -1,5 +1,5 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-working,_but_unmaintained-blue.svg)]()
+[![Status](https://img.shields.io/badge/status-working,_but_unmaintained-yellowgreen.svg)]()
 
 # dbus-portal-client
 
@@ -8,9 +8,9 @@ portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.po
  (a part of the xdg-desktop-portal) plus a Python reference probe. Lets an app bind a global hotkey
 on KDE/GNOME/Hyprland Wayland sessions — including from an XWayland process, since D-Bus is transport-agnostic 
 — without other tools, a native addon (`dbus-next`) or a first runtime dependency (`dbus-native`). It may 
-also be a useful lightweight example of using D-Bus without heavy dependencies for other xdg interfaces.
+also be useful as a lightweight, standalone example of using D-Bus for other xdg interfaces.
 
-## How to use the shortcuts portal (based on testing with KDE Plasma 6 / Wayland)
+## How to use the shortcuts portal (and the quirks of the XDG interface)
 
 - Call `BindShortcuts` on every launch. `ListShortcuts` alone does not re-arm a restored session —
   failing this, the shortcut is listed but the key still reaches the focused window (so is not captured globally).
@@ -18,7 +18,10 @@ also be a useful lightweight example of using D-Bus without heavy dependencies f
 - `preferred_trigger` is honoured on the **first bind only**. An app can't change its own shortcut
   afterward — only `ConfigureShortcuts` (the desktop's own editor) can add/remove triggers, and
   it's additive: user-added triggers keep firing even after the app's default is unchecked.
-- Always best to pass a `preferred_trigger`. Leaving it unset (tested on KDE Plasma 6) still lets the user pick a key combo in the consent dialog, but that dialog is easy to miss the point of — safer to ship a sensible default the user can change later via `ConfigureShortcuts` than to leave first-run UX up to how well they read the dialog. A knowledgable user can always override the default in that dialog anyway.
+- Always best to pass a `preferred_trigger`. Leaving it unset (tested on KDE Plasma 6) still lets 
+  the user pick a key combo in the consent dialog, but it's easy for the user to give permission without
+  setting any hotkey, so it's safer to ship a sensible default the user can change at that time, or 
+  later via `ConfigureShortcuts`.
 - There's no unbind. A full reset requires the user to delete the whole app entry in their desktop's
   shortcut settings.
 - Dispatch on the `shortcut_id` carried by the `Activated` signal — never a locally reconstructed
